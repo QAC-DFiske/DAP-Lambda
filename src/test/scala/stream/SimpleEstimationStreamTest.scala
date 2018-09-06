@@ -1,0 +1,5 @@
+package stream
+
+class SimpleEstimationStreamTest {
+
+}

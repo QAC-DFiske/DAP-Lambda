@@ -1,0 +1,5 @@
+package batch
+
+class SimpleEstimationBatch {
+
+}
