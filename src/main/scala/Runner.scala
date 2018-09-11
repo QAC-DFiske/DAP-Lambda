@@ -1,10 +1,10 @@
-import BatchRunner._
 import batch.SimpleEstimationBatch.SimpleEstimationBatch
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs
 import org.apache.hadoop.fs.{FileSystem, FileUtil}
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.types.{DoubleType, StringType, StructField, StructType}
+import stream.SimpleEstimationStream.SimpleEstimationStream
 
 import scala.util.Try
 
@@ -18,6 +18,7 @@ object Config {
   val TIME_COLUMN = "time"
   val IDENTIFIER_COLUMN = "reporting_unit"
   val TARGET_COLUMN = "turnover"
+  val WEIGHT_COLUMN = "weight"
 
   // Set IO method constants.
   val INGESTION_PATH = reflect.io.Path(".resources/ingestion")
@@ -36,7 +37,7 @@ object BatchRunner {
     * @param srcPath String - Directory containing PART files.
     * @param dstPath String - Path to save new file (implicitly set name here)
     */
-  def merge(srcPath: String, dstPath: String): Unit =  {
+  def merge(srcPath: String, dstPath: String): Unit = {
     FileUtil.copyMerge(HDFS, new fs.Path(srcPath), HDFS, new fs.Path(dstPath), false, HADOOP_CONFIG, null)
   }
 
@@ -45,7 +46,7 @@ object BatchRunner {
     * @param srcPath String - Path to file for copying.
     * @param dstPath String - Destination path.
     */
-  def copy(srcPath: String, dstPath: String): Unit =  {
+  def copy(srcPath: String, dstPath: String): Unit = {
     FileUtil.copy(new java.io.File(srcPath), HDFS, new fs.Path(dstPath), false, HADOOP_CONFIG)
   }
 
@@ -78,25 +79,26 @@ object StreamRunner {
   def main(args: Array[String]): Unit = {
 
     // Read processed data for join later.
-    val streamJoin = spark.read.json(PROCESSED_PATH + "/batchProcessed.json").select(TIME_COLUMN, "weight")
+    val processedAggregate = spark.read.json(PROCESSED_PATH + "/batchProcessed.json").select(TIME_COLUMN, WEIGHT_COLUMN)
 
-    // Define schema.
-    val streamSchema = StructType(Seq(StructField("time", StringType, false),
-                                      StructField("reporting_unit", StringType, false),
-                                      StructField("turnover", DoubleType, true)))
+    // Define input schema.
+    val streamSchema = StructType(Seq(StructField("time", StringType, nullable = false),
+                                      StructField("reporting_unit", StringType, nullable = false),
+                                      StructField("turnover", DoubleType, nullable = true)))
 
-    val simpleEstimateInputStream = spark.readStream.schema(streamSchema).json("./resources/ingestion")
+    // Read data from JSON file, apply schema.
+    val inputStream = spark.readStream.schema(streamSchema).json("./resources/ingestion")
 
-    val simpleEstimateTransformStream = simpleEstimateInputStream.join(streamJoin, List(TIME_COLUMN))
+    // Apply estimation method.
+    val transformStream = inputStream.streamSimpleEstimate(TIME_COLUMN, TARGET_COLUMN, processedAggregate)
 
-    val simpleEstimateWriteStream = simpleEstimateTransformStream.writeStream
-      .format("json")
-      .option("path", "./resources/storage/processed")
-      .option("checkpointLocation", "checkpoint")
-      .start()
+//    // Apply estimation method with aggregate.
+//    val transformStream = inputStream.streamSimpleEstimate(TIME_COLUMN, TARGET_COLUMN, processedAggregate, isAggregated = true)
 
-    simpleEstimateWriteStream.awaitTermination()
-
-    // TODO: get most recent weight.
+    // Write to console.
+    val writeStream = transformStream.writeStream
+                                     .format("console")
+                                     .start()
+                                     .awaitTermination(5000)
   }
 }
